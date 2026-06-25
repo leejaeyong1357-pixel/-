@@ -69,7 +69,19 @@ def api_analyze():
         rows += parse_text(text, report_id=os.path.splitext(name)[0],
                            part_name=part, meas_date=date)
     if not rows:
-        return jsonify({"error": "측정 항목을 인식하지 못했습니다. 양식을 확인하세요."}), 422
+        # 진단 정보 제공(어떤 텍스트가 추출됐는지 보여줘서 원인 파악)
+        lines = [l for l in text.splitlines() if l.strip()]
+        dim_cnt = sum(1 for l in lines if l.lstrip().startswith(("DIM", "FCF")))
+        ax_cnt = sum(1 for l in lines if l.lstrip()[:2].strip() in ("X", "Y", "Z", "M", "TP", "DF"))
+        return jsonify({
+            "error": "측정 항목을 인식하지 못했습니다.",
+            "debug": {
+                "추출_줄수": len(lines),
+                "DIM정의_줄": dim_cnt,
+                "축데이터_줄": ax_cnt,
+                "샘플": lines[:40],
+            }
+        }), 422
 
     a = analytics(rows)
     STATE["rows"] = rows
@@ -106,6 +118,23 @@ def api_ai():
     ctx = llm.build_context(STATE.get("analytics", {})) if STATE.get("analytics") else ""
     answer = llm.chat(msg, ctx)
     return jsonify({"answer": answer, "configured": llm.is_configured()})
+
+
+@app.route("/api/ai/status")
+def api_ai_status():
+    return jsonify(llm.status())
+
+
+@app.route("/api/ai/config", methods=["POST"])
+def api_ai_config():
+    return jsonify(llm.set_config(request.json or {}))
+
+
+@app.route("/api/ai/test", methods=["POST"])
+def api_ai_test():
+    if request.json:
+        llm.set_config(request.json)
+    return jsonify(llm.test())
 
 
 if __name__ == "__main__":

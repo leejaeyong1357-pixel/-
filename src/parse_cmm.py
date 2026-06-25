@@ -132,12 +132,15 @@ def parse_text(text, report_id="report", part_name="", meas_date=""):
             continue
 
         nums = [float(x) for x in NUM.findall(s)]
-        judged = any(c in s for c in "#<>")
+        n = len(nums)
 
-        if not judged:
-            # 위치도 성분행(X/Y/Z: NOMINAL MEAS DEV) → 참고용, 판정 제외
+        # 위치도 성분행(X/Y/Z: NOMINAL MEAS DEV 만 = 3개) → 참고용, 판정 제외
+        if axis in ("X", "Y", "Z") and n <= 3:
             continue
-        if len(nums) < 3:
+        # 판정행은 숫자 5개(TP) 또는 6개(일반/DF/M) 이상.
+        #  ※ 막대그래프(----#----)는 PDF에서 그림으로 들어가 텍스트로 안 뽑힐 수 있으므로
+        #     기호(#,<,>)에 의존하지 않고 '숫자 구조'로 판정행을 인식한다.
+        if n < 5:
             continue
 
         outtol = nums[-1]
@@ -165,6 +168,8 @@ def parse_text(text, report_id="report", part_name="", meas_date=""):
             direction = "LOW"      # 하한 초과(작게 가공)
         elif ">" in s:
             direction = "HIGH"     # 상한 초과(크게 가공)
+        elif judge == "NG":
+            direction = "HIGH" if dev > 0 else "LOW"   # 막대기호 없으면 편차 부호로 추정
         else:
             direction = "IN"
 

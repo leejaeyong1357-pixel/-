@@ -24,6 +24,7 @@
     <input id="fileInput" type="file" multiple accept=".pdf,.txt,.csv,application/pdf" hidden>
   </div>
   <div id="loading" class="loading" hidden><div class="spinner"></div> 분석 중…</div>
+  <pre id="uploadMsg" class="upload-msg" hidden></pre>
 </section>
 
 <!-- KPI -->
@@ -73,7 +74,33 @@
 
     <!-- AI 패널 -->
     <div class="panel ai">
-      <h3>🤖 AI 분석 <span id="aiState" class="badge"></span></h3>
+      <h3>🤖 AI 분석 <span id="aiState" class="badge off">확인중…</span></h3>
+
+      <!-- AI 연동 설정 -->
+      <details id="aiCfg" class="ai-cfg">
+        <summary>⚙ AI 설정 (H-chat 연동)</summary>
+        <label>Base URL
+          <input id="cfgUrl" placeholder="https://internal-apigw-kr.hmg-corp.io/hchat-in/api/v3/">
+        </label>
+        <label>API Key
+          <input id="cfgKey" type="password" placeholder="발급받은 개인 API Key">
+        </label>
+        <label>모델명
+          <input id="cfgModel" placeholder="예) gpt-4o / 사내 모델명">
+        </label>
+        <label>형식
+          <select id="cfgProvider">
+            <option value="custom">사내/OpenAI 호환 (chat/completions)</option>
+            <option value="anthropic">Anthropic(Claude) messages</option>
+          </select>
+        </label>
+        <div class="cfg-btns">
+          <button id="btnTest" class="btn small">연결 테스트</button>
+          <button id="btnSave" class="btn small primary">저장</button>
+        </div>
+        <div id="cfgResult" class="muted"></div>
+      </details>
+
       <div id="aiOut" class="ai-out muted">‘AI 종합분석’을 누르거나 질문을 입력하세요.</div>
       <div class="ai-input">
         <input id="aiMsg" placeholder="예) RH 보스 불합격 원인이 뭘까?">

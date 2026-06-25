@@ -1,22 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-LLM(AI) 연동 모듈 — 사내 H-chat API / OpenAI 호환 / Claude(Anthropic) 모두 지원.
+LLM(AI) 연동 — 사내 H-chat / OpenAI 호환 / Claude(Anthropic) 지원.
+설정은 (1) 화면에서 입력(런타임) 또는 (2) 환경변수로 가능.
 
-환경변수로 설정 (없으면 AI 기능은 '미설정' 안내만 반환):
-  LLM_PROVIDER   = custom | openai | anthropic   (기본 custom)
-  LLM_API_URL    = 채팅 엔드포인트 URL
-                   - custom/openai: .../v1/chat/completions
-                   - anthropic    : https://api.anthropic.com/v1/messages
-  LLM_API_KEY    = API 키
-  LLM_MODEL      = 모델명 (예: 사내모델명 / gpt-4o / claude-sonnet-4-6)
-  LLM_AUTH_HEADER= 인증 헤더 형식 (기본 'Bearer')  예) 'Bearer' 면 'Authorization: Bearer <KEY>'
-
-➜ 사내 H-chat 연동 시: LLM_PROVIDER=custom 으로 두고 URL/KEY/MODEL 만 맞추면 됩니다.
-  (대부분의 사내 게이트웨이가 OpenAI 호환 형식이라 그대로 동작)
+H-chat 예시 (사진의 값):
+  Base URL : https://internal-apigw-kr.hmg-corp.io/hchat-in/api/v3/
+  → 채팅 엔드포인트는 보통 Base URL + 'chat/completions'
+  API Key  : 발급받은 개인 키
+  Model    : 사내 모델명
 """
 import os
 import json
 import urllib.request
+import urllib.error
 
 SYS_PROMPT = (
     "당신은 자동차 부품 가공 라인의 품질·계측 전문가입니다. "
@@ -27,9 +23,46 @@ SYS_PROMPT = (
     "데이터에 없는 수치는 지어내지 마세요."
 )
 
+# 런타임 설정(화면에서 입력) — 비어있으면 환경변수 사용
+CONFIG = {"provider": "", "base_url": "", "endpoint": "", "api_key": "", "model": "", "auth_header": ""}
+
+
+def _cfg(key, env, default=""):
+    return CONFIG.get(key) or os.environ.get(env, default)
+
+
+def set_config(d):
+    for k in CONFIG:
+        if k in d and d[k] is not None:
+            CONFIG[k] = str(d[k]).strip()
+    return status()
+
 
 def is_configured():
-    return bool(os.environ.get("LLM_API_URL") and os.environ.get("LLM_API_KEY"))
+    return bool(_resolve_url() and _cfg("api_key", "LLM_API_KEY"))
+
+
+def status():
+    key = _cfg("api_key", "LLM_API_KEY")
+    return {
+        "configured": is_configured(),
+        "provider": _cfg("provider", "LLM_PROVIDER", "custom"),
+        "url": _resolve_url(),
+        "model": _cfg("model", "LLM_MODEL", "gpt-4o"),
+        "key_masked": (key[:4] + "…" + key[-4:]) if len(key) > 8 else ("설정됨" if key else ""),
+    }
+
+
+def _resolve_url():
+    """endpoint가 절대 URL이면 그대로, 아니면 base_url + 'chat/completions'."""
+    ep = _cfg("endpoint", "LLM_API_URL")
+    base = _cfg("base_url", "LLM_BASE_URL")
+    if ep and ep.startswith("http"):
+        return ep
+    if base:
+        b = base if base.endswith("/") else base + "/"
+        return b + (ep or "chat/completions")
+    return ""
 
 
 def _post(url, headers, payload, timeout=60):
@@ -37,49 +70,70 @@ def _post(url, headers, payload, timeout=60):
         url, data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", **headers}, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8"))
+        return r.status, json.loads(r.read().decode("utf-8"))
+
+
+def _payload_and_headers(messages):
+    provider = _cfg("provider", "LLM_PROVIDER", "custom").lower()
+    key = _cfg("api_key", "LLM_API_KEY")
+    model = _cfg("model", "LLM_MODEL", "gpt-4o")
+    if provider == "anthropic":
+        sys = next((m["content"] for m in messages if m["role"] == "system"), "")
+        usr = [m for m in messages if m["role"] != "system"]
+        return ({"x-api-key": key, "anthropic-version": "2023-06-01"},
+                {"model": model, "max_tokens": 1200, "system": sys, "messages": usr},
+                "anthropic")
+    auth = _cfg("auth_header", "LLM_AUTH_HEADER") or "Bearer"
+    return ({"Authorization": f"{auth} {key}"},
+            {"model": model, "temperature": 0.3, "messages": messages},
+            "openai")
+
+
+def _extract(kind, data):
+    if kind == "anthropic":
+        return data["content"][0]["text"]
+    return data["choices"][0]["message"]["content"]
 
 
 def chat(user_msg, context_text=""):
-    """user_msg + 분석 컨텍스트 → AI 답변 텍스트."""
     if not is_configured():
-        return ("⚠️ AI가 아직 연결되지 않았습니다. 서버 실행 전 환경변수를 설정하세요:\n"
-                "  set LLM_API_URL=<사내 H-chat 엔드포인트>\n"
-                "  set LLM_API_KEY=<발급키>\n"
-                "  set LLM_MODEL=<모델명>\n"
-                "그러면 이 패널에서 측정데이터에 대한 AI 분석/질의응답이 동작합니다.")
-
-    provider = os.environ.get("LLM_PROVIDER", "custom").lower()
-    url = os.environ["LLM_API_URL"]
-    key = os.environ["LLM_API_KEY"]
-    model = os.environ.get("LLM_MODEL", "gpt-4o")
-    auth = os.environ.get("LLM_AUTH_HEADER", "Bearer")
-    full_user = (f"[측정 분석 컨텍스트]\n{context_text}\n\n[질문/요청]\n{user_msg}"
-                 if context_text else user_msg)
-
+        return ("⚠️ AI가 아직 연결되지 않았습니다. 우측 'AI 설정'에 Base URL · API Key · 모델명을 입력하고 "
+                "[연결 테스트]를 눌러 주세요.")
+    full = (f"[측정 분석 컨텍스트]\n{context_text}\n\n[질문/요청]\n{user_msg}"
+            if context_text else user_msg)
+    messages = [{"role": "system", "content": SYS_PROMPT},
+                {"role": "user", "content": full}]
+    headers, payload, kind = _payload_and_headers(messages)
     try:
-        if provider == "anthropic":
-            data = _post(url, {"x-api-key": key, "anthropic-version": "2023-06-01"}, {
-                "model": model, "max_tokens": 1200, "system": SYS_PROMPT,
-                "messages": [{"role": "user", "content": full_user}],
-            })
-            return data["content"][0]["text"]
-        else:  # custom / openai (OpenAI 호환)
-            headers = {"Authorization": f"{auth} {key}"}
-            data = _post(url, headers, {
-                "model": model, "temperature": 0.3,
-                "messages": [
-                    {"role": "system", "content": SYS_PROMPT},
-                    {"role": "user", "content": full_user},
-                ],
-            })
-            return data["choices"][0]["message"]["content"]
-    except Exception as e:  # 네트워크/형식 오류 시 친절히 안내
-        return f"⚠️ AI 호출 실패: {e}\n(엔드포인트/키/모델/헤더 형식을 확인하세요. LLM_PROVIDER={provider})"
+        _, data = _post(_resolve_url(), headers, payload)
+        return _extract(kind, data)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "ignore")[:300]
+        return f"⚠️ AI 호출 실패 (HTTP {e.code}). 엔드포인트/키/모델을 확인하세요.\n응답: {body}"
+    except Exception as e:
+        return f"⚠️ AI 호출 실패: {e}\n(URL: {_resolve_url()})"
+
+
+def test():
+    """최소 요청으로 연결 확인 → {ok, detail}."""
+    if not is_configured():
+        return {"ok": False, "detail": "Base URL 또는 API Key가 비어 있습니다."}
+    messages = [{"role": "system", "content": "한국어로 한 단어만 답하세요."},
+                {"role": "user", "content": "연결확인. '정상'이라고만 답해."}]
+    headers, payload, kind = _payload_and_headers(messages)
+    payload = {**payload}
+    try:
+        st, data = _post(_resolve_url(), headers, payload, timeout=30)
+        ans = _extract(kind, data)
+        return {"ok": True, "detail": f"연결 성공 · 모델 응답: {ans[:40]}"}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "ignore")[:400]
+        return {"ok": False, "detail": f"HTTP {e.code} — {body}"}
+    except Exception as e:
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
 
 
 def build_context(analytics_result):
-    """분석 결과 dict → AI에게 줄 요약 컨텍스트 문자열."""
     k = analytics_result.get("kpi", {})
     lines = [f"부품: {k.get('part','')} / 측정일: {k.get('date','')}",
              f"총 {k.get('total')}개 항목, 불합격 {k.get('ng')}개({k.get('ng_rate')}%), 위험(예비불량) {k.get('risk')}개"]

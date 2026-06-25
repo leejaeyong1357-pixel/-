@@ -32,10 +32,24 @@ async function post(url, body) {
   try {
     const r = await fetch(url, { method:"POST", body });
     const j = await r.json();
-    if (j.error) { alert(j.error); return; }
+    if (j.error) { showUploadError(j); return; }
     DATA = j; render();
   } catch (e) { alert("요청 실패: " + e); }
   finally { el("loading").hidden = true; }
+}
+function showUploadError(j) {
+  let msg = "❌ " + (j.error || "분석 실패");
+  if (j.debug) {
+    const d = j.debug;
+    msg += `\n\n[진단] 추출된 줄 ${d["추출_줄수"]}개 · DIM정의 ${d["DIM정의_줄"]}개 · 축데이터 ${d["축데이터_줄"]}개`;
+    if ((d["추출_줄수"]||0) === 0)
+      msg += "\n→ PDF에서 글자가 안 뽑혔어요(스캔/이미지 PDF일 수 있음).";
+    else if ((d["DIM정의_줄"]||0) === 0)
+      msg += "\n→ 측정 양식이 예상과 달라요. 아래 샘플을 캡처해서 알려주세요.";
+    msg += "\n\n[추출 샘플]\n" + (d["샘플"]||[]).slice(0,20).join("\n");
+  }
+  const box = el("uploadMsg");
+  box.hidden = false; box.textContent = msg;
 }
 
 /* ---------- 렌더 ---------- */
@@ -203,6 +217,44 @@ async function ai(message) {
     bdg.className = "badge " + (j.configured ? "on" : "off");
   } catch(e){ out.textContent = "AI 호출 실패: " + e; }
 }
+
+/* ---------- AI 설정/연결 ---------- */
+async function loadAiStatus() {
+  try {
+    const s = await (await fetch("/api/ai/status")).json();
+    if (s.url) el("cfgUrl").value = s.url;
+    if (s.model) el("cfgModel").value = s.model;
+    if (s.provider) el("cfgProvider").value = s.provider;
+    setAiBadge(s.configured, s.configured ? "연결됨(설정 있음)" : "미설정");
+  } catch(e){ setAiBadge(false, "상태 확인 실패"); }
+}
+function setAiBadge(on, text) {
+  const b = el("aiState");
+  b.textContent = text; b.className = "badge " + (on ? "on" : "off");
+}
+function cfgPayload() {
+  return {
+    base_url: el("cfgUrl").value.trim(),
+    api_key: el("cfgKey").value.trim(),
+    model: el("cfgModel").value.trim(),
+    provider: el("cfgProvider").value,
+  };
+}
+el("btnSave").addEventListener("click", async () => {
+  const s = await (await fetch("/api/ai/config", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify(cfgPayload())})).json();
+  el("cfgResult").textContent = "저장됨.";
+  setAiBadge(s.configured, s.configured ? "설정 저장됨" : "URL/Key 필요");
+});
+el("btnTest").addEventListener("click", async () => {
+  el("cfgResult").textContent = "🔌 연결 테스트 중…";
+  setAiBadge(false, "테스트 중…");
+  const r = await (await fetch("/api/ai/test", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify(cfgPayload())})).json();
+  el("cfgResult").textContent = (r.ok ? "✅ " : "❌ ") + r.detail;
+  setAiBadge(r.ok, r.ok ? "연결됨 ✅" : "연결 실패");
+});
+loadAiStatus();
 
 /* ---------- util ---------- */
 function num(v){const n=parseFloat(v);return isNaN(n)?NaN:n;}
