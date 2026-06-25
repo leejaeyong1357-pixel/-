@@ -238,6 +238,7 @@ function cfgPayload() {
     api_key: el("cfgKey").value.trim(),
     model: el("cfgModel").value.trim(),
     provider: el("cfgProvider").value,
+    auth_header: el("cfgAuth").value.trim(),
   };
 }
 el("btnSave").addEventListener("click", async () => {

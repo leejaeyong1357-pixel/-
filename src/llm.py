@@ -3,11 +3,11 @@
 LLM(AI) 연동 — 사내 H-chat / OpenAI 호환 / Claude(Anthropic) 지원.
 설정은 (1) 화면에서 입력(런타임) 또는 (2) 환경변수로 가능.
 
-H-chat 예시 (사진의 값):
+H-chat 예시:
   Base URL : https://internal-apigw-kr.hmg-corp.io/hchat-in/api/v3/
-  → 채팅 엔드포인트는 보통 Base URL + 'chat/completions'
-  API Key  : 발급받은 개인 키
-  Model    : 사내 모델명
+  → 채팅 엔드포인트는 Base URL + 'chat/completions'
+  인증 헤더 형식은 게이트웨이마다 다르므로(Authorization/x-api-key 등)
+  연결 테스트 시 여러 후보를 자동으로 시도해 통하는 방식을 찾는다.
 """
 import os
 import json
@@ -23,8 +23,19 @@ SYS_PROMPT = (
     "데이터에 없는 수치는 지어내지 마세요."
 )
 
-# 런타임 설정(화면에서 입력) — 비어있으면 환경변수 사용
+# 런타임 설정(화면 입력) — 비어있으면 환경변수 사용
 CONFIG = {"provider": "", "base_url": "", "endpoint": "", "api_key": "", "model": "", "auth_header": ""}
+
+# 인증 헤더 후보(게이트웨이마다 다름). 연결 테스트가 차례로 시도.
+AUTH_SCHEMES = [
+    ("Authorization", "Bearer {k}"),
+    ("x-api-key", "{k}"),
+    ("api-key", "{k}"),
+    ("apikey", "{k}"),
+    ("X-API-KEY", "{k}"),
+    ("Authorization", "{k}"),
+]
+_WORKING = {"scheme": None}   # 성공한 인증 방식 기억
 
 
 def _cfg(key, env, default=""):
@@ -35,6 +46,7 @@ def set_config(d):
     for k in CONFIG:
         if k in d and d[k] is not None:
             CONFIG[k] = str(d[k]).strip()
+    _WORKING["scheme"] = None   # 설정 바뀌면 인증 재탐지
     return status()
 
 
@@ -73,26 +85,64 @@ def _post(url, headers, payload, timeout=60):
         return r.status, json.loads(r.read().decode("utf-8"))
 
 
-def _payload_and_headers(messages):
-    provider = _cfg("provider", "LLM_PROVIDER", "custom").lower()
-    key = _cfg("api_key", "LLM_API_KEY")
+def _is_anthropic():
+    return _cfg("provider", "LLM_PROVIDER", "custom").lower() == "anthropic"
+
+
+def _payload(messages):
     model = _cfg("model", "LLM_MODEL", "gpt-4o")
-    if provider == "anthropic":
-        sys = next((m["content"] for m in messages if m["role"] == "system"), "")
+    if _is_anthropic():
+        sysmsg = next((m["content"] for m in messages if m["role"] == "system"), "")
         usr = [m for m in messages if m["role"] != "system"]
-        return ({"x-api-key": key, "anthropic-version": "2023-06-01"},
-                {"model": model, "max_tokens": 1200, "system": sys, "messages": usr},
-                "anthropic")
-    auth = _cfg("auth_header", "LLM_AUTH_HEADER") or "Bearer"
-    return ({"Authorization": f"{auth} {key}"},
-            {"model": model, "temperature": 0.3, "messages": messages},
-            "openai")
+        return {"model": model, "max_tokens": 1200, "system": sysmsg, "messages": usr}
+    return {"model": model, "temperature": 0.3, "messages": messages}
 
 
-def _extract(kind, data):
-    if kind == "anthropic":
+def _extract(data):
+    if _is_anthropic():
         return data["content"][0]["text"]
     return data["choices"][0]["message"]["content"]
+
+
+def _schemes():
+    """수동 지정(auth_header)>기억된 성공방식>후보 전체 순."""
+    if _is_anthropic():
+        return [("x-api-key", "{k}")]
+    manual = _cfg("auth_header", "LLM_AUTH_HEADER")
+    if manual:
+        if ":" in manual:
+            name, val = manual.split(":", 1)
+            val = val.strip()
+            return [(name.strip(), val if "{k}" in val else val + " {k}")]
+        return [(manual.strip(), "{k}")]
+    if _WORKING["scheme"]:
+        return [_WORKING["scheme"]]
+    return AUTH_SCHEMES
+
+
+def _call(messages, timeout=60):
+    """통하는 인증 방식을 찾아 호출 → (텍스트, scheme). 실패 시 RuntimeError."""
+    key = _cfg("api_key", "LLM_API_KEY")
+    url = _resolve_url()
+    payload = _payload(messages)
+    extra = {"anthropic-version": "2023-06-01"} if _is_anthropic() else {}
+    last = None
+    for sch in _schemes():
+        name, tmpl = sch
+        headers = {name: tmpl.format(k=key), **extra}
+        try:
+            _, data = _post(url, headers, payload, timeout=timeout)
+            _WORKING["scheme"] = sch
+            return _extract(data), sch
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "ignore")[:300]
+            last = (e.code, body)
+            if e.code not in (401, 403):   # 인증 외 오류면 헤더 더 바꿔도 무의미
+                raise RuntimeError(f"HTTP {e.code} — {body}")
+        except Exception as e:
+            last = (None, f"{type(e).__name__}: {e}")
+    code, body = last if last else (None, "원인 미상")
+    raise RuntimeError(f"인증 실패(HTTP {code}). 시도한 인증헤더가 모두 거부됨. 마지막 응답: {body}")
 
 
 def chat(user_msg, context_text=""):
@@ -103,34 +153,24 @@ def chat(user_msg, context_text=""):
             if context_text else user_msg)
     messages = [{"role": "system", "content": SYS_PROMPT},
                 {"role": "user", "content": full}]
-    headers, payload, kind = _payload_and_headers(messages)
     try:
-        _, data = _post(_resolve_url(), headers, payload)
-        return _extract(kind, data)
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "ignore")[:300]
-        return f"⚠️ AI 호출 실패 (HTTP {e.code}). 엔드포인트/키/모델을 확인하세요.\n응답: {body}"
+        text, _ = _call(messages)
+        return text
     except Exception as e:
         return f"⚠️ AI 호출 실패: {e}\n(URL: {_resolve_url()})"
 
 
 def test():
-    """최소 요청으로 연결 확인 → {ok, detail}."""
+    """여러 인증 방식을 자동 시도 → {ok, detail}."""
     if not is_configured():
         return {"ok": False, "detail": "Base URL 또는 API Key가 비어 있습니다."}
     messages = [{"role": "system", "content": "한국어로 한 단어만 답하세요."},
                 {"role": "user", "content": "연결확인. '정상'이라고만 답해."}]
-    headers, payload, kind = _payload_and_headers(messages)
-    payload = {**payload}
     try:
-        st, data = _post(_resolve_url(), headers, payload, timeout=30)
-        ans = _extract(kind, data)
-        return {"ok": True, "detail": f"연결 성공 · 모델 응답: {ans[:40]}"}
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "ignore")[:400]
-        return {"ok": False, "detail": f"HTTP {e.code} — {body}"}
+        ans, sch = _call(messages, timeout=30)
+        return {"ok": True, "detail": f"연결 성공 (인증헤더: {sch[0]}) · 응답: {ans[:30]}"}
     except Exception as e:
-        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+        return {"ok": False, "detail": str(e)}
 
 
 def build_context(analytics_result):
