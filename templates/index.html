@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3차원 측정데이터 AI 대시보드</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="dot"></span> 3차원 측정데이터 <b>AI 대시보드</b></div>
+  <div class="actions">
+    <button id="btnSample" class="btn ghost">샘플(3d)로 보기</button>
+    <button id="btnExcel" class="btn primary" disabled>⬇ 엑셀 다운로드</button>
+  </div>
+</header>
+
+<!-- 업로드 영역 -->
+<section id="dropzone" class="dropzone">
+  <div class="dz-inner">
+    <div class="dz-icon">📄➜📊</div>
+    <p><b>측정 PDF</b> 또는 텍스트 리포트를 여기로 끌어다 놓으세요</p>
+    <p class="muted">여러 개 동시 업로드 가능 · pc-dmis 양식 · 클릭해서 선택도 가능</p>
+    <input id="fileInput" type="file" multiple accept=".pdf,.txt,.csv,application/pdf" hidden>
+  </div>
+  <div id="loading" class="loading" hidden><div class="spinner"></div> 분석 중…</div>
+</section>
+
+<!-- KPI -->
+<section id="kpis" class="kpis" hidden></section>
+
+<!-- 메인: 좌(표) / 우(분석) -->
+<main id="main" class="main" hidden>
+  <!-- 가운데: 정제 데이터 표 -->
+  <section class="panel table-panel">
+    <div class="panel-head">
+      <h2>정제된 측정 데이터</h2>
+      <div class="tabs">
+        <button class="tab active" data-filter="all">전체</button>
+        <button class="tab" data-filter="ng">불합격</button>
+        <button class="tab" data-filter="risk">위험</button>
+      </div>
+      <input id="search" class="search" placeholder="🔍 부위/공정/ID 검색">
+      <span id="rowcount" class="muted"></span>
+    </div>
+    <div class="table-wrap">
+      <table id="dataTable"><thead></thead><tbody></tbody></table>
+    </div>
+  </section>
+
+  <!-- 오른쪽: 분석 + AI -->
+  <aside class="side">
+    <div class="panel">
+      <h3>핵심 인사이트</h3>
+      <ul id="insights" class="insights"></ul>
+    </div>
+    <div class="panel">
+      <h3>④ 추세선 — 실린더 보어 직경 (시간 →)</h3>
+      <div id="chartTrend" class="chart"></div>
+    </div>
+    <div class="panel">
+      <h3>① 공정별 불합격 Pareto</h3>
+      <div id="chartPareto" class="chart"></div>
+    </div>
+    <div class="panel">
+      <h3>② 공차 소진율 분포</h3>
+      <div id="chartDist" class="chart"></div>
+    </div>
+    <div class="panel">
+      <h3>③ 공정별 편향(공구/셋업 신호)</h3>
+      <div id="chartBias" class="chart"></div>
+    </div>
+
+    <!-- AI 패널 -->
+    <div class="panel ai">
+      <h3>🤖 AI 분석 <span id="aiState" class="badge"></span></h3>
+      <div id="aiOut" class="ai-out muted">‘AI 종합분석’을 누르거나 질문을 입력하세요.</div>
+      <div class="ai-input">
+        <input id="aiMsg" placeholder="예) RH 보스 불합격 원인이 뭘까?">
+        <button id="btnAsk" class="btn small">질문</button>
+      </div>
+      <button id="btnAuto" class="btn primary block">AI 종합분석 실행</button>
+    </div>
+  </aside>
+</main>
+
+<footer class="foot muted">로컬 실행 · 외부 전송 없음(AI 연동 시 측정요약만 사내 API로 전송) · pc-dmis 측정 리포트 기준</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
